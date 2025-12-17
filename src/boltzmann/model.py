@@ -384,7 +384,7 @@ class RBM(nn.Module):
     def free_energy(self, v: torch.Tensor) -> torch.Tensor:
         v = v.to(self.W.dtype)
         wx_b = v @ self.W + self.bh
-        return -v @ self.bv - torch.log1p(torch.exp(wx_b)).sum(dim=1)
+        return -v @ self.bv - torch.nn.functional.softplus(wx_b).sum(dim=1)
 
     @torch.no_grad()
     def evaluate(self, dataloader, *, recon_k: int = 1) -> Dict[str, float]:
@@ -400,7 +400,7 @@ class RBM(nn.Module):
             B = v.size(0)
             n_samples += B
 
-            fe = self.free_energy(v).mean().item()
+            fe = self.free_energy(v).mean().item() / (self.nv + self.nh)  # per-node free energy
             v_rec = self.reconstruct(v, k=recon_k)
 
             mse = torch.mean((v - v_rec) ** 2).item()
@@ -639,10 +639,10 @@ class RBM(nn.Module):
         return torch.stack(samples, dim=0)
 
     def draw_blocks(self, save_path: Optional[str] = None, show: bool = True) -> None:
-        """Visualize the RBM block structure and weight mask.
+        """Visualize the RBM block structure at the block level.
 
         Draws a bipartite graph showing visible blocks (bottom) and hidden blocks (top),
-        with connections colored by the mask (allowed vs restricted).
+        with block-to-block connections colored by whether they are allowed or restricted.
 
         Args:
             save_path: If provided, save the figure to this path.
@@ -651,131 +651,110 @@ class RBM(nn.Module):
         try:
             import matplotlib.pyplot as plt
             import matplotlib.patches as mpatches
-            from matplotlib.collections import LineCollection
+            from matplotlib.patches import FancyBboxPatch
         except ImportError as e:
             print(f"[draw_blocks] matplotlib import failed: {e}")
             return
 
-        fig, ax = plt.subplots(figsize=(12, 8))
+        fig, ax = plt.subplots(figsize=(14, 8))
 
         # Layout parameters
-        v_y = 0.0  # visible layer y-coordinate
-        h_y = 1.0  # hidden layer y-coordinate
-        node_radius = 0.02
-        block_gap = 0.15  # gap between blocks
+        v_y = 0.15  # visible layer y-coordinate
+        h_y = 0.85  # hidden layer y-coordinate
 
         # Colors
-        v_colors = plt.cm.Set2.colors  # visible block colors
-        h_colors = plt.cm.Set3.colors  # hidden block colors
+        v_colors = list(plt.cm.Set2.colors)
+        h_colors = list(plt.cm.Set3.colors)
         allowed_color = "#4CAF50"  # green for allowed connections
-        restricted_color = "#FFCDD2"  # light red for restricted (shown faintly)
+        restricted_color = "#E57373"  # red for restricted
 
-        # Calculate positions for visible units (grouped by block)
-        v_positions = []
-        v_block_colors = []
-        v_block_labels = []
-        x_offset = 0.0
+        # Get block info
+        v_blocks = list(self._v_block_ranges.items())
+        h_blocks = list(self._h_block_ranges.items())
 
-        for i, (block_name, (start, end)) in enumerate(self._v_block_ranges.items()):
-            block_size = end - start
-            color = v_colors[i % len(v_colors)]
-            for j in range(block_size):
-                x = x_offset + j * 0.08
-                v_positions.append((x, v_y))
-                v_block_colors.append(color)
-            # Store label position (center of block)
-            center_x = x_offset + (block_size - 1) * 0.08 / 2
-            v_block_labels.append((center_x, block_name, color))
-            x_offset += block_size * 0.08 + block_gap
+        n_v_blocks = len(v_blocks)
+        n_h_blocks = len(h_blocks)
 
-        # Normalize visible positions to [0, 1] range
-        if v_positions:
-            v_max_x = max(p[0] for p in v_positions)
-            v_min_x = min(p[0] for p in v_positions)
-            v_range = v_max_x - v_min_x if v_max_x > v_min_x else 1.0
-            v_positions = [((p[0] - v_min_x) / v_range * 0.8 + 0.1, p[1]) for p in v_positions]
-            v_block_labels = [((x - v_min_x) / v_range * 0.8 + 0.1, name, c) for x, name, c in v_block_labels]
+        # Calculate block positions (evenly spaced)
+        def get_block_positions(n_blocks, y):
+            if n_blocks == 1:
+                return [0.5]
+            return [0.1 + i * 0.8 / (n_blocks - 1) for i in range(n_blocks)]
 
-        # Calculate positions for hidden units (grouped by block)
-        h_positions = []
-        h_block_colors = []
-        h_block_labels = []
-        x_offset = 0.0
+        v_x_positions = get_block_positions(n_v_blocks, v_y)
+        h_x_positions = get_block_positions(n_h_blocks, h_y)
 
-        for i, (block_name, (start, end)) in enumerate(self._h_block_ranges.items()):
-            block_size = end - start
-            color = h_colors[i % len(h_colors)]
-            for j in range(block_size):
-                x = x_offset + j * 0.08
-                h_positions.append((x, h_y))
-                h_block_colors.append(color)
-            center_x = x_offset + (block_size - 1) * 0.08 / 2
-            h_block_labels.append((center_x, block_name, color))
-            x_offset += block_size * 0.08 + block_gap
-
-        # Normalize hidden positions
-        if h_positions:
-            h_max_x = max(p[0] for p in h_positions)
-            h_min_x = min(p[0] for p in h_positions)
-            h_range = h_max_x - h_min_x if h_max_x > h_min_x else 1.0
-            h_positions = [((p[0] - h_min_x) / h_range * 0.8 + 0.1, p[1]) for p in h_positions]
-            h_block_labels = [((x - h_min_x) / h_range * 0.8 + 0.1, name, c) for x, name, c in h_block_labels]
-
-        # Draw connections (edges) based on mask
+        # Determine block-to-block connectivity from mask
         mask_np = self.mask.detach().cpu().numpy()
-        allowed_lines = []
-        restricted_lines = []
 
-        for vi in range(self.nv):
-            for hi in range(self.nh):
-                vx, vy = v_positions[vi]
-                hx, hy = h_positions[hi]
-                if mask_np[vi, hi] > 0.5:
-                    allowed_lines.append([(vx, vy), (hx, hy)])
-                else:
-                    restricted_lines.append([(vx, vy), (hx, hy)])
+        def blocks_connected(v_block_range, h_block_range):
+            """Check if any connection exists between two blocks."""
+            v_start, v_end = v_block_range
+            h_start, h_end = h_block_range
+            return mask_np[v_start:v_end, h_start:h_end].any()
 
-        # Draw restricted connections (faint, behind)
-        if restricted_lines:
-            lc_restricted = LineCollection(
-                restricted_lines, colors=restricted_color, linewidths=0.3, alpha=0.3
+        # Draw connections between blocks
+        for vi, (v_name, v_range) in enumerate(v_blocks):
+            for hi, (h_name, h_range) in enumerate(h_blocks):
+                vx, vy = v_x_positions[vi], v_y
+                hx, hy = h_x_positions[hi], h_y
+
+                connected = blocks_connected(v_range, h_range)
+                color = allowed_color if connected else restricted_color
+                alpha = 0.7 if connected else 0.2
+                linewidth = 2.5 if connected else 1.0
+                zorder = 2 if connected else 1
+
+                ax.plot([vx, hx], [vy + 0.05, hy - 0.05],
+                        color=color, alpha=alpha, linewidth=linewidth, zorder=zorder)
+
+        # Draw visible blocks as rounded rectangles
+        block_height = 0.08
+        for i, (name, (start, end)) in enumerate(v_blocks):
+            size = end - start
+            x = v_x_positions[i]
+            color = v_colors[i % len(v_colors)]
+
+            # Block width proportional to log of size (for visual balance)
+            width = 0.06 + 0.02 * min(3, max(0, (size / 100)))
+
+            rect = FancyBboxPatch(
+                (x - width/2, v_y - block_height/2), width, block_height,
+                boxstyle="round,pad=0.01,rounding_size=0.02",
+                facecolor=color, edgecolor="black", linewidth=1.5, zorder=3
             )
-            ax.add_collection(lc_restricted)
+            ax.add_patch(rect)
 
-        # Draw allowed connections
-        if allowed_lines:
-            lc_allowed = LineCollection(
-                allowed_lines, colors=allowed_color, linewidths=0.5, alpha=0.6
+            # Block label with size
+            ax.text(x, v_y, f"{name}\n({size})", ha="center", va="center",
+                    fontsize=9, fontweight="bold", zorder=4)
+
+        # Draw hidden blocks as rounded rectangles
+        for i, (name, (start, end)) in enumerate(h_blocks):
+            size = end - start
+            x = h_x_positions[i]
+            color = h_colors[i % len(h_colors)]
+
+            width = 0.06 + 0.02 * min(3, max(0, (size / 100)))
+
+            rect = FancyBboxPatch(
+                (x - width/2, h_y - block_height/2), width, block_height,
+                boxstyle="round,pad=0.01,rounding_size=0.02",
+                facecolor=color, edgecolor="black", linewidth=1.5, zorder=3
             )
-            ax.add_collection(lc_allowed)
+            ax.add_patch(rect)
 
-        # Draw visible nodes
-        for (x, y), color in zip(v_positions, v_block_colors):
-            circle = plt.Circle((x, y), node_radius, color=color, ec="black", linewidth=0.5, zorder=3)
-            ax.add_patch(circle)
-
-        # Draw hidden nodes
-        for (x, y), color in zip(h_positions, h_block_colors):
-            circle = plt.Circle((x, y), node_radius, color=color, ec="black", linewidth=0.5, zorder=3)
-            ax.add_patch(circle)
-
-        # Draw block labels
-        for x, name, color in v_block_labels:
-            ax.text(x, v_y - 0.08, name, ha="center", va="top", fontsize=10, fontweight="bold",
-                    color="black", bbox=dict(boxstyle="round,pad=0.3", facecolor=color, alpha=0.7))
-
-        for x, name, color in h_block_labels:
-            ax.text(x, h_y + 0.08, name, ha="center", va="bottom", fontsize=10, fontweight="bold",
-                    color="black", bbox=dict(boxstyle="round,pad=0.3", facecolor=color, alpha=0.7))
+            ax.text(x, h_y, f"{name}\n({size})", ha="center", va="center",
+                    fontsize=9, fontweight="bold", zorder=4)
 
         # Layer labels
-        ax.text(0.02, v_y, "Visible", ha="left", va="center", fontsize=12, fontweight="bold")
-        ax.text(0.02, h_y, "Hidden", ha="left", va="center", fontsize=12, fontweight="bold")
+        ax.text(0.02, v_y, "Visible\nLayer", ha="left", va="center", fontsize=11, fontweight="bold")
+        ax.text(0.02, h_y, "Hidden\nLayer", ha="left", va="center", fontsize=11, fontweight="bold")
 
         # Legend
-        allowed_patch = mpatches.Patch(color=allowed_color, label="Allowed connections")
-        restricted_patch = mpatches.Patch(color=restricted_color, label="Restricted (masked)")
-        ax.legend(handles=[allowed_patch, restricted_patch], loc="upper right", fontsize=9)
+        allowed_patch = mpatches.Patch(color=allowed_color, label="Connected (allowed)")
+        restricted_patch = mpatches.Patch(color=restricted_color, alpha=0.3, label="Restricted (masked)")
+        ax.legend(handles=[allowed_patch, restricted_patch], loc="upper right", fontsize=10)
 
         # Title with summary
         n_allowed = int(mask_np.sum())
@@ -783,14 +762,14 @@ class RBM(nn.Module):
         n_restricted = n_total - n_allowed
         ax.set_title(
             f"RBM Block Structure\n"
-            f"Visible: {self.nv} units ({len(self._v_block_ranges)} blocks) | "
-            f"Hidden: {self.nh} units ({len(self._h_block_ranges)} blocks)\n"
-            f"Connections: {n_allowed}/{n_total} allowed, {n_restricted} restricted",
-            fontsize=11
+            f"Visible: {self.nv:,} units ({n_v_blocks} blocks) | "
+            f"Hidden: {self.nh:,} units ({n_h_blocks} blocks)\n"
+            f"Connections: {n_allowed:,}/{n_total:,} allowed, {n_restricted:,} restricted",
+            fontsize=12, fontweight="bold"
         )
 
         ax.set_xlim(-0.05, 1.05)
-        ax.set_ylim(-0.2, 1.2)
+        ax.set_ylim(0, 1)
         ax.set_aspect("equal")
         ax.axis("off")
 

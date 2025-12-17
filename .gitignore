@@ -1,3 +1,6 @@
-example/
 __pycache__
+example/
 clearing/
+clearing_old/
+damped_oscillator/
+stochastic_oscillator/

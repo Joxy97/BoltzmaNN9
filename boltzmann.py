@@ -222,6 +222,8 @@ def cmd_evaluate(args):
         "test_metrics": test_metrics,
         "conditional_nll_nats": conditional_results["mean_nll_nats"],
         "conditional_nll_bits": conditional_results["mean_nll_bits"],
+        "conditional_nll_per_bit": conditional_results["mean_nll_per_bit"],
+        "n_target_bits": conditional_results["n_target_bits"],
     }
     save_metrics(all_metrics, paths["metrics"])
 
@@ -231,6 +233,8 @@ def cmd_evaluate(args):
     print(f"Test metrics: {test_metrics}")
     print(f"Conditional NLL (nats): {conditional_results['mean_nll_nats']:.4f}")
     print(f"Conditional NLL (bits): {conditional_results['mean_nll_bits']:.4f}")
+    print(f"Conditional NLL per bit: {conditional_results['mean_nll_per_bit']:.4f}")
+    print(f"Target bits: {conditional_results['n_target_bits']}")
     print(f"\nMetrics saved to: {paths['metrics']}")
 
     return 0

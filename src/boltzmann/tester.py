@@ -59,19 +59,22 @@ class RBMTester:
 
         For each test sample, clamps the specified visible units and
         samples from the conditional distribution p(target | clamp).
-        Computes NLL based on empirical frequency of true target values.
+
+        Computes per-bit NLL using empirical bit frequencies, which scales
+        to large target dimensions.
 
         Args:
             n_samples: Number of MCMC samples per test point.
             burn_in: Burn-in steps for MCMC.
             thin: Thinning interval between samples.
-            laplace_alpha: Laplace smoothing parameter.
+            laplace_alpha: Laplace smoothing parameter for per-bit probabilities.
             log_every: Log progress every N samples.
 
         Returns:
             Dictionary with:
-                - mean_nll_nats: Mean NLL in nats.
+                - mean_nll_nats: Mean NLL in nats (sum over target bits).
                 - mean_nll_bits: Mean NLL in bits.
+                - mean_nll_per_bit: Mean NLL per target bit.
                 - nll_nats_per_sample: List of per-sample NLL in nats.
                 - nll_bits_per_sample: List of per-sample NLL in bits.
         """
@@ -83,6 +86,7 @@ class RBMTester:
         nlls_bits = []
 
         total_points = len(self.test_dataloader.dataset)
+        n_target_bits = len(self.target_idx)
 
         outer_pbar = tqdm(
             total=total_points,
@@ -94,7 +98,7 @@ class RBMTester:
             v = v.to(self.device)
 
             for i in range(v.size(0)):
-                # Clamp R_t
+                # Clamp visible units
                 v_clamp = torch.zeros(
                     self.model.nv,
                     device=self.device,
@@ -102,9 +106,8 @@ class RBMTester:
                 )
                 v_clamp[self.clamp_idx] = v[i, self.clamp_idx]
 
-                # True future value
+                # True target bits
                 true_bits = v[i, self.target_idx]
-                true_val = self._bits_to_int(true_bits)
 
                 # Sample conditional
                 samples = self.model.sample_clamped(
@@ -115,22 +118,18 @@ class RBMTester:
                     thin=thin,
                 )
 
-                future_bits = samples[:, self.target_idx]
-                future_vals = [
-                    self._bits_to_int(future_bits[j])
-                    for j in range(future_bits.size(0))
-                ]
+                # Get target bits from samples: (n_samples, n_target_bits)
+                sampled_bits = samples[:, self.target_idx]
 
-                # Empirical pmf with Laplace smoothing
-                counts = Counter(future_vals)
-                K = 2 ** len(self.target_idx)
+                # Compute per-bit empirical probability with Laplace smoothing
+                # For each target bit, estimate P(bit=true_value)
+                bit_matches = (sampled_bits == true_bits.unsqueeze(0)).float()
+                bit_probs = (bit_matches.sum(dim=0) + laplace_alpha) / (n_samples + 2 * laplace_alpha)
 
-                prob = (counts.get(true_val, 0) + laplace_alpha) / (
-                    n_samples + laplace_alpha * K
-                )
-
-                # NLL in nats and bits
-                nll_nats = -math.log(prob)
+                # NLL = -sum(log(p_i)) for each bit
+                # Clamp to avoid log(0)
+                bit_probs = bit_probs.clamp(min=1e-10, max=1 - 1e-10)
+                nll_nats = -torch.log(bit_probs).sum().item()
                 nll_bits = nll_nats / ln2
 
                 nlls_nats.append(nll_nats)
@@ -141,9 +140,9 @@ class RBMTester:
                     mean_nats = sum(nlls_nats) / len(nlls_nats)
                     mean_bits = sum(nlls_bits) / len(nlls_bits)
                     outer_pbar.set_postfix(
-                        mean_nats=f"{mean_nats:.3f}",
-                        mean_bits=f"{mean_bits:.3f}",
-                        samples=len(nlls_nats),
+                        nll_nats=f"{mean_nats:.3f}",
+                        nll_bits=f"{mean_bits:.3f}",
+                        per_bit=f"{mean_nats / n_target_bits:.4f}",
                     )
 
                 outer_pbar.update(1)
@@ -156,10 +155,13 @@ class RBMTester:
         mean_bits = (
             float(sum(nlls_bits) / len(nlls_bits)) if nlls_bits else float("nan")
         )
+        mean_per_bit = mean_nats / n_target_bits if n_target_bits > 0 else float("nan")
 
         return {
             "mean_nll_nats": mean_nats,
             "mean_nll_bits": mean_bits,
+            "mean_nll_per_bit": mean_per_bit,
+            "n_target_bits": n_target_bits,
             "nll_nats_per_sample": nlls_nats,
             "nll_bits_per_sample": nlls_bits,
         }
