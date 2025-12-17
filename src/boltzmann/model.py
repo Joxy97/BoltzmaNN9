@@ -110,6 +110,49 @@ class RBM(nn.Module):
         self._plateau_best: Optional[float] = None
         self._plateau_bad_count: int = 0
 
+    @classmethod
+    def from_run_folder(
+        cls,
+        run_folder: str,
+        device: Optional[str] = None,
+    ) -> Tuple["RBM", Dict[str, Any]]:
+        """Load an RBM model from a run folder.
+
+        Args:
+            run_folder: Path to run folder containing model.pt and config.py.
+            device: Device to load model to. If None, uses CPU.
+
+        Returns:
+            Tuple of (model, config) where config is the full configuration dict.
+        """
+        from pathlib import Path
+
+        run_path = Path(run_folder)
+        model_path = run_path / "model.pt"
+        config_path = run_path / "config.py"
+
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+
+        # Load config
+        from src.boltzmann.config import load_config
+        config = load_config(config_path)
+
+        # Load checkpoint
+        checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+
+        # Create model from config
+        model = cls(config)
+        model.load_state_dict(checkpoint["model_state_dict"])
+
+        if device:
+            model = model.to(device)
+
+        print(f"Model loaded from: {run_path}")
+        return model, config
+
     # --------------------------------------------------
     # Core distributions
     # --------------------------------------------------
