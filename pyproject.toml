@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "boltzmann"
+name = "boltzmann9"
 version = "0.1.0"
 description = "Restricted Boltzmann Machine implementation in PyTorch"
 readme = "README.md"
@@ -27,7 +27,7 @@ dev = [
 ]
 
 [project.scripts]
-boltzmann-train = "main:main"
+boltzmann9-train = "main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
