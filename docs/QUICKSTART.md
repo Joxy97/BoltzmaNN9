@@ -13,7 +13,7 @@ pip install -e ".[dev]"
 
 ## 2) Scaffold a project
 ```powershell
-python boltzmann.py new_project demo_project
+python boltzmann9.py new_project demo_project
 ```
 Created layout:
 - `demo_project/config.py` – experiment settings (edit as needed).
@@ -30,29 +30,29 @@ This writes `demo_project/data/data.csv` and `data_visualization.png`.
 
 ## 4) Train
 ```powershell
-python boltzmann.py train --project demo_project
+python boltzmann9.py train --project demo_project
 ```
 This loads `demo_project/config.py`, trains an RBM, and writes a run under `demo_project/output/run_<timestamp>/` containing `model.pt`, `training.log`, `history.json`, and plots.
 
 ## 5) Evaluate
 Evaluate the latest run in the project:
 ```powershell
-python boltzmann.py evaluate --run demo_project
+python boltzmann9.py evaluate --run demo_project
 ```
 Or a specific run:
 ```powershell
-python boltzmann.py evaluate --run demo_project/output/run_<timestamp>
+python boltzmann9.py evaluate --run demo_project/output/run_<timestamp>
 ```
 
 ## 6) List runs
 ```powershell
-python boltzmann.py list --project demo_project
+python boltzmann9.py list --project demo_project
 ```
 
 ## 7) Preprocess external raw data (optional)
 If you have your own raw CSVs and a `visible_blocks` mapping, place a `config.py` alongside them and run:
 ```powershell
-python boltzmann.py preprocess_raw --config path/to/config.py
+python boltzmann9.py preprocess_raw --config path/to/config.py
 ```
 Relative paths inside the config are resolved against the config file’s directory. The preprocessor writes a processed binary CSV and a matching `.meta.json`.
 

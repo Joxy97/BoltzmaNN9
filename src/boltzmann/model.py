@@ -137,7 +137,7 @@ class RBM(nn.Module):
             raise FileNotFoundError(f"Config file not found: {config_path}")
 
         # Load config
-        from src.boltzmann.config import load_config
+        from boltzmann.config import load_config
         config = load_config(config_path)
 
         # Load checkpoint
