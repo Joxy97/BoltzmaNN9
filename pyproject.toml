@@ -27,10 +27,12 @@ dev = [
 ]
 
 [project.scripts]
-boltzmann9-train = "main:main"
+boltzmann9 = "boltzmann.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["boltzmann", "boltzmann.*"]
+exclude = ["templates", "templates.*"]
 
 [tool.black]
 line-length = 88
